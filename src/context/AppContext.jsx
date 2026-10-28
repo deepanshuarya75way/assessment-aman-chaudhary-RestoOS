@@ -1,6 +1,7 @@
-import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
+import React, { createContext, useContext, useState, useEffect, useRef, useCallback } from 'react';
 import i18n from '../locales/i18n';
 import { supabase } from '../services/supabase';
+import { enqueueOrder, flushQueue, getQueueLenght, setupConnectivityListener } from '../services/offlineSync';
 
 const AppContext = createContext();
 
@@ -77,6 +78,8 @@ export const useAppContext = () => useContext(AppContext);
 export const AppProvider = ({ children }) => {
   const [supabaseUser, setSupabaseUser] = useState(null);
   const [isInitializing, setIsInitializing] = useState(true);
+  const [isOnline, setIsOnline] = useState(() => navigator.onLine);
+  const [offlineQueueSize, setOfflineQueueSize] = useState(() => getQueueLength());
   const [isDataLoaded, setIsDataLoaded] = useState(() => {
     try {
       const cachedRestaurants = JSON.parse(localStorage.getItem('3dish_cached_restaurants') || '[]');
@@ -281,6 +284,31 @@ export const AppProvider = ({ children }) => {
       return updated;
     });
   };
+
+  useEffect(() => {
+    const handleOnline = () => {setIsOnline(true);};
+    const handleOffline = () => setIsOnline(false);
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    return () => {
+      window.addEventListener('online', handleOnline);
+      window.addEventListener('offline', handleOffline);
+    };
+  }, []);
+
+  useEffect(() => {
+    if(!supabase || !isOnline) return;
+    flushQueue(supabase, {
+      onSuccess: (_op, reason) => {
+        setOfflineQueueSize(getQueueLenght());
+        if(reason === 'synced') showNotification('Offline order synced successfully');
+      },
+      onPermanentFailure: (_op) => {
+        setOfflineQueueSize(getQueueLenght());
+        showNotification('An offline order could not be synced. Please re-order');
+      },
+    });
+  }, [isOnline, supabaseUser]);
 
   // 1. Auth Init
   useEffect(() => {
@@ -684,7 +712,9 @@ export const AppProvider = ({ children }) => {
       showNotification('Cloud connection required.');
       return false;
     }
-    
+
+    const idempotencyKey = orderData.idempotencyKey || `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
     const rest = restaurants.find(r => r.id === activeRestId);
     const taxRate = rest?.tax_rate !== undefined ? rest.tax_rate / 100 : 0.08;
 
@@ -801,6 +831,18 @@ export const AppProvider = ({ children }) => {
           type: 'location_meta'
         }
       ];
+    }
+
+    newOrder.metaData = {...AppContext(newOrder.metaData || {}), idempotencyKey};
+
+    if(!navigator.online) {
+      enqueueOrder(idempotencyKey, newOrder);
+      setOfflineQueueSize(getQueueLenght());
+      setCart([]);
+      const restName = restaurants.find(r => r.id === activeRestId)?.name || 'Restaurant';
+      saveNutritionRecord(cart, restName);
+      showNotification('Your are offline. Order save - it will sync when you reconnect');
+      return true;
     }
 
     try {
@@ -1289,6 +1331,8 @@ export const AppProvider = ({ children }) => {
     userPreferences, updatePreferences,
     theme, toggleTheme,
     isDataLoaded,
+    isOnline,
+    offlineQueueSize,
   };
 
   return (

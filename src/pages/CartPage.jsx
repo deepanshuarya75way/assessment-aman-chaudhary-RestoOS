@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ChevronLeft, ChevronRight, ShoppingCart, MapPin, Clock, Smartphone, CheckCircle2, Store, Trash2, Plus, Minus, Zap, Box, Sparkles, X, Truck, Gift } from 'lucide-react';
+import { ChevronLeft, ChevronRight, ShoppingCart, MapPin, Clock, Smartphone, CheckCircle2, Store, Trash2, Plus, Minus, Zap, Box, Sparkles, X, Truck, Gift, WifiOff } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useTranslation } from 'react-i18next';
 import { useAppContext } from '../context/AppContext';
@@ -9,6 +9,7 @@ import { supabase } from '../services/supabase';
 import { auth } from '../services/firebase';
 import { RecaptchaVerifier, signInWithPhoneNumber } from 'firebase/auth';
 import LocationPicker from '../components/LocationPicker';
+import {validateCart} from '../services/offlineSync';
 
 // ── Combo Image Cycler ─────────────────────────────────────────────────
 function ComboImageCycler({ images }) {
@@ -58,7 +59,8 @@ function ComboImageCycler({ images }) {
 
 export default function CartPage() {
   const navigate = useNavigate();
-  const { cart, setCart, placeOrder, activeRestId, restaurants, planFor, dishes, addToCart, removeOneFromCart, user, setUser, tableNumber, showNotification } = useAppContext();
+  const { cart, setCart, placeOrder, activeRestId, restaurants, planFor, dishes, addToCart, removeOneFromCart, user, setUser, tableNumber, showNotification, isOnline, offlineQueueSize } = useAppContext();
+  const [syncWarnings, setSyncWarnings] = useState([]);
   const [showNamePrompt, setShowNamePrompt] = useState(false);
   const [tempName, setTempName] = useState('');
   const [tempPhone, setTempPhone] = useState('');
@@ -302,6 +304,28 @@ export default function CartPage() {
 
     setIsProcessing(true);
 
+    const {valid, warnings, updatedCart} = validateCart(card, dishes);
+    if(warnings.length > 0) {
+      setSyncWarnings(warnings);
+
+      if(!valid) {
+        const validIds = new Set(updatedCart.map(i => i.cartId));
+        setCart(prev => prev.filter(i => validIds.has(i.cardId)));
+        setIsProcessing(false);
+        return;
+      }
+      if(updatedCart.some((item, idx) => item.price !== cart[idx]?.price)) {
+        setCart(prev => prev.map(item => {
+          const updated = updatedCart.find(u => u.cardId === item.cartId);
+          return updated ? {...item, price: updated.price} :item;
+        }));
+        setIsProcessing(false);
+        return;
+      }
+    } else {
+      setSyncWarnings([]);
+    }
+
     // ── Verification Code Logic ─────────────────────────────────────────
     // This 4-digit code is ONLY for DINE-IN orders.
     // • DINE-IN: code is generated only when the vendor's toggle is ON.
@@ -512,6 +536,17 @@ export default function CartPage() {
 
       <div className="flex-1 overflow-y-auto px-6 pt-6 pb-36 z-10 no-scrollbar">
         <motion.div key="cart" initial={{ x: -20, opacity: 0 }} animate={{ x: 0, opacity: 1 }} exit={{ x: -20, opacity: 0 }} className="space-y-4">
+
+          <AnimatePresence>
+            {!isOnline && (
+              <motion.div
+                initial={{opacity:0, y:-8}} animate={{opacity:1,y:0}} exit={{opacity:0, y:-8}}
+                className="flex items-center gap-3 px-4 py-3 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-amber-600 dark:text-amber-400 text-sm font-medium"
+              >
+                <WifiOff size={16}/>
+              </motion.div>
+            )}
+          </AnimatePresence>
 
           {/* Manual Table Number input for Dine-in when no table number scanned */}
           {!isDelivery && (tableNumber === 'delivery' || !tableNumber) && (
